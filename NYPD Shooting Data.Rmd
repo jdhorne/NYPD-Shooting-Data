@@ -1,0 +1,185 @@
+---
+title: "NYPD Shooting Data"
+date: "4/22/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+# for maps
+library(sf)
+library("rnaturalearth")
+```
+## Background
+New York City offers a vast amount of open data on their portal[^1]. One such dataset, provided by the New York Police Department, provides information on all shooting incidents that have occurred within the city since 2006, up to the end of the previous calendar year. We will analyze this dataset to answer some questions, such as:
+
+1. What areas of the city had the most shooting incidents?
+2. Which age groups were most represented as perpetrators and victims?
+3. Are shootings and murders trending upward or downward over time?
+
+[^1]: https://data.cityofnewyork.us/
+
+## Load and Standardize
+First, we load the data by URL and perform some simple transformations to make it
+easier to work with: dates become real date objects, and strings become factors.
+```{r import}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_data <- read_csv(url_in)
+nypd_data <- nypd_data %>% 
+                mutate(OCCUR_DATE = mdy(OCCUR_DATE),
+                       BORO = as_factor(BORO),
+                       PERP_AGE_GROUP = as_factor(PERP_AGE_GROUP),
+                       PERP_SEX = as_factor(PERP_SEX),
+                       PERP_RACE = as_factor(PERP_RACE),
+                       VIC_AGE_GROUP = as_factor(VIC_AGE_GROUP),
+                       VIC_SEX = as_factor(VIC_SEX),
+                       VIC_RACE = as_factor(VIC_RACE),
+                       STATISTICAL_MURDER_FLAG = as_factor(STATISTICAL_MURDER_FLAG)
+                ) %>%
+                select(-c(X_COORD_CD, Y_COORD_CD, Lon_Lat, PRECINCT,
+                          JURISDICTION_CODE, LOCATION_DESC))
+```
+
+## Summary of Input Data
+Let's take a quick look at the data we have so far.
+```{r summary}
+summary(nypd_data)
+```
+
+There are a number of data points in here that have "invalid" values. We will ignore those
+for this initial analysis, but we should investigate them more deeply before drawing firm
+conclusions. Not doing so could introduce bias into our results.
+
+## Shootings by Age Group
+Next, we'll look at the shooting incidents aggregated by the age group of both
+the perpetrator and the victim. A bubble plot is a nice way to visualize this
+since we have three dimensions of data to represent.
+
+```{r visualize_age} 
+age_groups <- c("<18", "18-24", "25-44", "45-64", "65+")
+
+# Summarize the data into buckets by perpetrator and victim age groups
+nypd_data_by_age <- nypd_data %>%
+    group_by(PERP_AGE_GROUP, VIC_AGE_GROUP) %>%
+    tally() %>%
+    filter(PERP_AGE_GROUP %in% age_groups, VIC_AGE_GROUP %in% age_groups) %>%
+    ungroup()
+
+# Order the age groups sensibly
+nypd_data_by_age$VIC_AGE_GROUP <-
+  fct_relevel(nypd_data_by_age$VIC_AGE_GROUP, age_groups)
+nypd_data_by_age$PERP_AGE_GROUP <-
+  fct_relevel(nypd_data_by_age$PERP_AGE_GROUP, age_groups)
+
+# Now, create a bubble plot with the data
+nypd_data_by_age %>%
+    ggplot(aes(x=PERP_AGE_GROUP, y=VIC_AGE_GROUP)) +
+    geom_point(aes(size=n)) +
+    scale_size(range = c(1, 15)) +
+    labs(title = "NYPD Shootings by Age Group", x = "Perpetrator Age", y = "Victim Age") +
+    theme_bw()
+```
+The majority of shooting incidents appear to be where both perpetrator and victim are in the
+18-24 and 25-44 age groups, with a somewhat higher number of shootings where the perpetrator
+and the victim are in the same age group. This would be an interesting question for further
+investigation: how strongly does the perpetrator's age group predict the victim's age group?
+
+## Geographic Plot
+Our data have latitude and longitude, which we can use to plot the shootings on a map.
+```{r map}
+world <- ne_countries(scale="large", returnclass="sf")
+
+ggplot(data = world) +
+     geom_sf() +
+     geom_point(data=nypd_data, aes(x = Longitude, y = Latitude), size=1, shape=23, fill="darkred") +
+     coord_sf(xlim=c(-74.26, -73.7), ylim=c(40.49, 40.92), expand = FALSE)
+```
+
+## Shooting Incidents by Borough
+Our map seems to show that the majority of shootings occurred in the Brooklyn and Queens boroughs. Let's count the shootings within each borough to see if that's true.
+
+```{r visualize_boro}
+# Summarize the data by borough (counting the number of incidents in each)
+nypd_data_by_boro <- nypd_data %>%
+  group_by(BORO) %>%
+  tally() %>%
+  ungroup() %>%
+  # these prepare our data for display in the pie chart
+  arrange(desc(BORO)) %>%
+  mutate(prop = n / sum(n) * 100) %>%
+  mutate(ypos = cumsum(prop) - 0.5*prop)
+
+# now generate the pie chart
+nypd_data_by_boro %>%
+  ggplot(aes(x="", y=prop, fill = BORO)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() +
+  labs(title = "Shootings by Borough") +
+  theme(legend.position="none") +
+  geom_text(aes(y = ypos, label = BORO), color = "white", size=4) +
+  scale_fill_brewer(palette="Set1")
+
+```
+
+Indeed, those two boroughs do have da majority of the shootings in the data.
+
+Why would that be the case? And, are there smaller geographical units (zip codes,
+precincts, census tracts, etc) that are over- or under-represented? These would
+be interesting questions to pursue.
+
+## Murders
+According to the Open Data Network description of this data set[^2], the STATISTICAL_MURDER_FLAG column is a boolean value that indicates that the "[s]shooting resulted in the victim’s death which would be counted as a murder."
+
+[^2]: https://www.opendatanetwork.com/dataset/data.cityofnewyork.us/833y-fsy8
+
+Let's plot the murders by month along with the numbers of shootings by month to see if they seem to correlate, and if they are trending upward or downward.
+
+```{r events}
+# Summarize the data by date and murder flag
+nypd_months <- nypd_data %>% 
+  mutate(ym = floor_date(OCCUR_DATE, unit="month")) %>%
+  group_by(ym, STATISTICAL_MURDER_FLAG) %>% 
+  add_count() %>% 
+  select(c(ym, STATISTICAL_MURDER_FLAG, n)) %>% 
+  arrange(ym, STATISTICAL_MURDER_FLAG) %>% 
+  summarize(shootings = n()) %>%
+  select(ym, STATISTICAL_MURDER_FLAG, shootings) %>%
+  rename(event = STATISTICAL_MURDER_FLAG)
+
+nypd_months$event <- 
+  recode(nypd_months$event, "TRUE" = "murders", "FALSE" = "other shootings")
+
+ggplot(nypd_months, aes(x = ym, y = shootings, color = event)) +
+  geom_point() + 
+  geom_smooth(method=lm) +
+  labs(title = "NYC Murders and Other Shootings, 2006-2021", subtitle = "Linear Fit", x = "year", y="count")
+```
+Clearly, both seem to be trending downward over the scope of the graph, using a linear fit. What if we don't require the fit to be linear? Perhaps that will confirm our perception of an upward trend at the end?
+
+```{r events-nonlinear}
+ggplot(nypd_months, aes(x = ym, y = shootings, color = event)) +
+  geom_point() + 
+  geom_smooth() +
+  labs(title = "NYC Murders and Other Shootings, 2006-2021", subtitle = "Nonlinear Fit", x = "year", y="count")
+```
+
+Sure enough, these models confirm the recent upward trend in both murders and other shootings. And, yes, it seems like the numbers of murders and other shootings trend together.
+
+## Bias
+There are many possible sources of bias in this analysis, including:
+
+1. Each borough of the city may have its own standards about how/if shootings are recorded. For example,
+if Brooklyn has a very robust policy toward recording shootings whereas Staten Island's policy is more
+lax, we could erroneously conclude that Brooklyn has a disproportionate number.
+2. There are many data points where the victim and/or perpetrator age groups are "Other," "Unknown," or "NA." Could it be that certain age groups are more likely than others to have one of these values?
+
+
+## Session Information
+```{r sessioninfo}
+sessionInfo()
+```
