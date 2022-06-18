@@ -7,6 +7,21 @@ output:
 ---
 
 ```{r setup, include=FALSE}
+
+###
+###
+###            HEY FELLOW STUDENT, PLEASE READ THIS!
+###
+###
+### Extra libraries are required to knit this document!
+###
+### R studio SHOULD automatically prompt you to download and install
+### "sf" and "rnaturalearth".
+###
+### If that doesn't work for you, I've saved the generated HTML and PDF 
+### documents in the GitHub repo as proof that it does knit.
+### 
+
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(lubridate)
